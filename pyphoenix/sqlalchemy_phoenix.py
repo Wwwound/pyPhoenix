@@ -19,7 +19,7 @@ import pyphoenix
 
 from sqlalchemy.engine.default import DefaultDialect
 
-from sqlalchemy.sql.compiler import DDLCompiler
+from sqlalchemy.sql.compiler import DDLCompiler, IdentifierPreparer
 from sqlalchemy.exc import CompileError
 
 from sqlalchemy import types
@@ -35,6 +35,11 @@ class PhoenixDDLCompiler(DDLCompiler):
         return DDLCompiler.visit_primary_key_constraint(self, constraint)
 
 
+class PhoenixIdentifierPreparer(IdentifierPreparer):
+    def quote(self, ident, force=None):
+        return self.quote_identifier(ident)
+
+
 class PhoenixDialect(DefaultDialect):
 
     name = "phoenix"
@@ -42,6 +47,8 @@ class PhoenixDialect(DefaultDialect):
     driver = "pyphoenix"
 
     ddl_compiler = PhoenixDDLCompiler
+
+    preparer = PhoenixIdentifierPreparer
 
     @classmethod
     def dbapi(cls):
@@ -67,14 +74,14 @@ class PhoenixDialect(DefaultDialect):
     def has_table(self, connection, table_name, schema=None):
         if schema is None:
             query = "SELECT 1 FROM system.catalog WHERE table_name = ? LIMIT 1"
-            params = [table_name.upper()]
+            params = [table_name]
         else:
             query = "SELECT 1 FROM system.catalog WHERE table_name = ? AND TABLE_SCHEM = ? LIMIT 1"
-            params = [table_name.upper(), schema.upper()]
+            params = [table_name, schema]
         return connection.execute(query, params).first() is not None
 
     def get_schema_names(self, connection, **kw):
-        query = "SELECT DISTINCT TABLE_SCHEM FROM SYSTEM.CATALOG"
+        query = "SELECT DISTINCT TABLE_SCHEM FROM SYSTEM.CATALOG WHERE TABLE_SCHEM IS NOT NULL"
         return [row[0] for row in connection.execute(query)]
 
     def get_table_names(self, connection, schema=None, **kw):
@@ -82,8 +89,17 @@ class PhoenixDialect(DefaultDialect):
             query = "SELECT DISTINCT table_name FROM SYSTEM.CATALOG"
             params = []
         else:
-            query = "SELECT DISTINCT table_name FROM SYSTEM.CATALOG WHERE TABLE_SCHEM = ? "
-            params = [schema.upper()]
+            query = "SELECT DISTINCT table_name FROM SYSTEM.CATALOG WHERE TABLE_SCHEM = ? AND TABLE_TYPE IN ('u', 's')"
+            params = [schema]
+        return [row[0] for row in connection.execute(query, params)]
+
+    def get_view_names(self, connection, schema=None, **kw):
+        if schema is None:
+            query = "SELECT DISTINCT table_name FROM SYSTEM.CATALOG"
+            params = []
+        else:
+            query = "SELECT DISTINCT table_name FROM SYSTEM.CATALOG WHERE TABLE_SCHEM = ? AND TABLE_TYPE='v'"
+            params = [schema]
         return [row[0] for row in connection.execute(query, params)]
 
     def get_columns(self, connection, table_name, schema=None, **kw):
@@ -92,14 +108,15 @@ class PhoenixDialect(DefaultDialect):
                     "FROM system.catalog " \
                     "WHERE table_name = ? " \
                     "ORDER BY ORDINAL_POSITION"
-            params = [table_name.upper()]
+            params = [table_name]
         else:
             query = "SELECT COLUMN_NAME, DATA_TYPE, NULLABLE " \
                     "FROM system.catalog " \
                     "WHERE TABLE_SCHEM = ? " \
                     "AND table_name = ? " \
+                    "AND COLUMN_NAME IS NOT NULL " \
                     "ORDER BY ORDINAL_POSITION"
-            params = [schema.upper(), table_name.upper()]
+            params = [schema, table_name]
 
         # get all of the fields for this table
         c = connection.execute(query, params)
@@ -118,7 +135,8 @@ class PhoenixDialect(DefaultDialect):
                 'name': name,
                 'type': col_type,
                 'nullable': nullable,
-                'default': None
+                'default': None,
+                'quote': True
             }
 
             cols.append(col_d)
